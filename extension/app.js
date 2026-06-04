@@ -708,6 +708,9 @@ const ICONS = {
    ---------------------------------------------------------------- */
 let domainGroups = [];
 
+// Frequently visited websites from local Chrome history.
+let frequentWebsites = [];
+
 
 /* ----------------------------------------------------------------
    HELPER: filter out browser-internal pages
@@ -730,6 +733,116 @@ function getRealTabs() {
       !url.startsWith('brave://')
     );
   });
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeHistoryWebsite(url) {
+  try {
+    const parsed = new URL(url || '');
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!parsed.hostname) return null;
+
+    return {
+      hostname: parsed.hostname,
+      homeUrl: `${parsed.protocol}//${parsed.hostname}/`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getFrequentWebsites(limit = 8) {
+  if (!chrome.history || !chrome.history.search) return [];
+
+  try {
+    const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+    const items = await chrome.history.search({
+      text: '',
+      startTime: ninetyDaysAgo,
+      maxResults: 500,
+    });
+
+    const byHostname = new Map();
+
+    for (const item of items) {
+      const website = normalizeHistoryWebsite(item.url);
+      if (!website) continue;
+
+      const existing = byHostname.get(website.hostname) || {
+        hostname: website.hostname,
+        homeUrl: website.homeUrl,
+        visitCount: 0,
+        lastVisitTime: 0,
+      };
+
+      existing.visitCount += item.visitCount || 1;
+      existing.lastVisitTime = Math.max(existing.lastVisitTime, item.lastVisitTime || 0);
+      byHostname.set(website.hostname, existing);
+    }
+
+    return Array.from(byHostname.values())
+      .sort((a, b) => {
+        if (b.visitCount !== a.visitCount) return b.visitCount - a.visitCount;
+        return b.lastVisitTime - a.lastVisitTime;
+      })
+      .slice(0, limit);
+  } catch (err) {
+    console.warn('[tab-out] Could not load frequent websites:', err);
+    return [];
+  }
+}
+
+function renderFrequentWebsite(item) {
+  const displayName = friendlyDomain(item.hostname);
+  const cleanHost = item.hostname.replace(/^www\./, '');
+  const faviconUrl = `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(item.homeUrl)}&size=32`;
+  const safeUrl = escapeHtml(item.homeUrl);
+
+  return `
+    <button class="frequent-site" data-action="open-frequent-site" data-site-url="${safeUrl}" title="${safeUrl}">
+      <img class="frequent-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
+      <span class="frequent-label">${escapeHtml(displayName)}</span>
+      <span class="frequent-domain">${escapeHtml(cleanHost)}</span>
+    </button>`;
+}
+
+async function renderFrequentSection() {
+  const section = document.getElementById('frequentSection');
+  const grid = document.getElementById('frequentGrid');
+  const countEl = document.getElementById('frequentSectionCount');
+  if (!section || !grid) return;
+
+  frequentWebsites = await getFrequentWebsites(8);
+
+  if (frequentWebsites.length === 0) {
+    section.style.display = 'none';
+    grid.innerHTML = '';
+    return;
+  }
+
+  grid.innerHTML = frequentWebsites.map(renderFrequentWebsite).join('');
+  if (countEl) countEl.textContent = `${frequentWebsites.length} sites`;
+  section.style.display = 'block';
+}
+
+async function openFrequentWebsite(homeUrl) {
+  if (!homeUrl) return;
+
+  const currentTab = await chrome.tabs.getCurrent();
+
+  if (currentTab && currentTab.id) {
+    await chrome.tabs.update(currentTab.id, { url: homeUrl });
+  } else {
+    await chrome.tabs.create({ url: homeUrl });
+  }
 }
 
 /**
@@ -1030,6 +1143,9 @@ async function renderStaticDashboard() {
   await fetchOpenTabs();
   const realTabs = getRealTabs();
 
+  // --- Render frequent websites from local Chrome history ---
+  await renderFrequentSection();
+
   // --- Group tabs by domain ---
   // Landing pages (Gmail inbox, Twitter home, etc.) get their own special group
   // so they can be closed together without affecting content tabs on the same domain.
@@ -1203,6 +1319,12 @@ document.addEventListener('click', async (e) => {
   }
 
   const card = actionEl.closest('.mission-card');
+
+  // ---- Open a frequent website in the current new-tab page ----
+  if (action === 'open-frequent-site') {
+    await openFrequentWebsite(actionEl.dataset.siteUrl);
+    return;
+  }
 
   // ---- Expand overflow chips ("+N more") ----
   if (action === 'expand-chips') {

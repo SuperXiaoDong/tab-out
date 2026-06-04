@@ -6,6 +6,10 @@ Tab Out is a Chrome extension that replaces your new tab page with a dashboard o
 
 No server. No account. No external API calls. Just a Chrome extension.
 
+This fork adds a local Chrome-history powered **Frequently visited** section, so your new tab page can also work as a shortcut launcher for the websites you use most.
+
+Based on the original open-source project by [Zara](https://github.com/zarazhangrui/tab-out).
+
 ---
 
 ## Install with a coding agent
@@ -13,7 +17,7 @@ No server. No account. No external API calls. Just a Chrome extension.
 Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
 
 ```
-https://github.com/zarazhangrui/tab-out
+https://github.com/SuperXiaoDong/tab-out
 ```
 
 The agent will walk you through it. Takes about 1 minute.
@@ -28,6 +32,7 @@ The agent will walk you through it. Takes about 1 minute.
 - **Duplicate detection** flags when you have the same page open twice, with one-click cleanup
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
+- **Frequently visited** shows website-level shortcuts generated from your local Chrome history
 - **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
 - **Expandable groups** show the first 8 tabs with a clickable "+N more"
 - **100% local** your data never leaves your machine
@@ -40,7 +45,7 @@ The agent will walk you through it. Takes about 1 minute.
 **1. Clone the repo**
 
 ```bash
-git clone https://github.com/zarazhangrui/tab-out.git
+git clone https://github.com/SuperXiaoDong/tab-out.git
 ```
 
 **2. Load the Chrome extension**
@@ -69,6 +74,8 @@ You open a new tab
 
 Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs are stored in `chrome.storage.local`.
 
+The frequently visited shortcuts are generated locally from Chrome history and rendered as website homepages. The extension does not upload or store your raw browsing history.
+
 ---
 
 ## Tech stack
@@ -77,6 +84,7 @@ Everything runs inside the Chrome extension. No external server, no API calls, n
 |------|-----|
 | Extension | Chrome Manifest V3 |
 | Storage | chrome.storage.local |
+| History | chrome.history, local only |
 | Sound | Web Audio API (synthesized, no files) |
 | Animations | CSS transitions + JS confetti particles |
 
@@ -88,4 +96,4 @@ MIT
 
 ---
 
-Built by [Zara](https://x.com/zarazhangrui)
+Fork by [BigDong](https://github.com/SuperXiaoDong/tab-out). Original project by [Zara](https://github.com/zarazhangrui/tab-out).
