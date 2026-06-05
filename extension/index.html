@@ -60,6 +60,19 @@
   </section>
 
   <!-- ================================================================
+       BOOKMARK CHECKUP — local bookmarks + history, no network checks.
+       Hidden when there are no stale or duplicate bookmarks to review.
+       ================================================================ -->
+  <section class="bookmark-checkup-section" id="bookmarkCheckupSection" style="display:none">
+    <div class="section-header">
+      <h2>Bookmark Checkup</h2>
+      <div class="section-line"></div>
+      <div class="section-count" id="bookmarkCheckupCount"></div>
+    </div>
+    <div class="bookmark-checkup-grid" id="bookmarkCheckupGrid"></div>
+  </section>
+
+  <!-- ================================================================
        MAIN CONTENT AREA — two-column layout
        Left: open tabs (domain/mission cards)
        Right: saved for later checklist

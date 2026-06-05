@@ -8,7 +8,20 @@ No server. No account. No external API calls. Just a Chrome extension.
 
 This fork adds a local Chrome-history powered **Frequently visited** section, so your new tab page can also work as a shortcut launcher for the websites you use most.
 
-Based on the original open-source project by [Zara](https://github.com/zarazhangrui/tab-out).
+It also adds **Bookmark Checkup**, a local bookmarks review that surfaces stale bookmarks and exact duplicate bookmark URLs for manual cleanup.
+
+Based on the original open-source project by [Zara](https://github.com/zarazhangrui/tab-out). This fork keeps Zara's clean new-tab cleanup experience and adds a local browsing-memory layer on top.
+
+## What this fork adds
+
+Compared with Zara's original base version, this fork adds:
+
+- **Frequently visited** shortcuts generated from local Chrome history
+- **Bookmark Checkup** for stale bookmarks and duplicate bookmark URLs
+- **Batch cleanup** for sleeping bookmarks with checkbox selection
+- **Folder filtering** so stale bookmarks can be reviewed by bookmark folder
+- **Hidden-site management** for temporarily hiding frequent/history suggestions
+- **Localhost grouping** for easier vibe-coding project cleanup
 
 ---
 
@@ -33,6 +46,7 @@ The agent will walk you through it. Takes about 1 minute.
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
 - **Frequently visited** shows website-level shortcuts generated from your local Chrome history
+- **Bookmark Checkup** finds stale and duplicate bookmarks, with batch selection for stale bookmark cleanup
 - **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
 - **Expandable groups** show the first 8 tabs with a clickable "+N more"
 - **100% local** your data never leaves your machine
@@ -74,7 +88,7 @@ You open a new tab
 
 Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs are stored in `chrome.storage.local`.
 
-The frequently visited shortcuts are generated locally from Chrome history and rendered as website homepages. The extension does not upload or store your raw browsing history.
+The frequently visited shortcuts are generated locally from Chrome history and rendered as website homepages. Bookmark Checkup reads local Chrome bookmarks and local history to find stale or duplicate entries. The extension does not upload or store your raw browsing history or bookmarks.
 
 ---
 
@@ -85,6 +99,7 @@ The frequently visited shortcuts are generated locally from Chrome history and r
 | Extension | Chrome Manifest V3 |
 | Storage | chrome.storage.local |
 | History | chrome.history, local only |
+| Bookmarks | chrome.bookmarks, local only |
 | Sound | Web Audio API (synthesized, no files) |
 | Animations | CSS transitions + JS confetti particles |
 

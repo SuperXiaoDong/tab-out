@@ -713,6 +713,18 @@ let frequentWebsites = [];
 
 const FREQUENT_SITE_HIDE_DAYS = 30;
 
+// Bookmark Checkup: stale and duplicate local bookmarks.
+let bookmarkCheckup = { stale: [], duplicates: [] };
+let selectedStaleBookmarkIds = new Set();
+let visibleStaleCount = 50;
+let selectedStaleFolder = '__all__';
+
+const BOOKMARK_STALE_DAYS = 365;
+const BOOKMARK_VERY_STALE_DAYS = 730;
+const BOOKMARK_CHECKUP_HIDE_DAYS = 30;
+const BOOKMARK_STALE_PAGE_SIZE = 50;
+const BOOKMARK_DUPLICATE_LIMIT = 8;
+
 
 /* ----------------------------------------------------------------
    HELPER: filter out browser-internal pages
@@ -758,6 +770,444 @@ function normalizeHistoryWebsite(url) {
     };
   } catch {
     return null;
+  }
+}
+
+function normalizeBookmarkUrl(url) {
+  try {
+    const parsed = new URL(url || '');
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!parsed.hostname) return null;
+
+    parsed.hash = '';
+    parsed.protocol = parsed.protocol.toLowerCase();
+    parsed.hostname = parsed.hostname.toLowerCase();
+
+    if (
+      (parsed.protocol === 'https:' && parsed.port === '443') ||
+      (parsed.protocol === 'http:' && parsed.port === '80')
+    ) {
+      parsed.port = '';
+    }
+
+    if (parsed.pathname.length > 1) {
+      parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+    }
+
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function getBookmarkWebsite(url) {
+  try {
+    const parsed = new URL(url || '');
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return {
+      hostname: parsed.hostname,
+      homeUrl: `${parsed.protocol}//${parsed.hostname}/`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function flattenBookmarks(nodes, folderPath = []) {
+  const bookmarks = [];
+
+  for (const node of nodes || []) {
+    if (node.url) {
+      const normalizedUrl = normalizeBookmarkUrl(node.url);
+      const website = getBookmarkWebsite(node.url);
+      if (!normalizedUrl || !website) continue;
+
+      bookmarks.push({
+        id: node.id,
+        parentId: node.parentId,
+        title: stripTitleNoise(node.title || website.hostname),
+        url: node.url,
+        normalizedUrl,
+        hostname: website.hostname,
+        homeUrl: website.homeUrl,
+        folderPath: folderPath.filter(Boolean).join(' / '),
+        dateAdded: node.dateAdded || 0,
+      });
+      continue;
+    }
+
+    if (node.children) {
+      const nextPath = node.title ? [...folderPath, node.title] : folderPath;
+      bookmarks.push(...flattenBookmarks(node.children, nextPath));
+    }
+  }
+
+  return bookmarks;
+}
+
+async function getActiveHiddenBookmarkCheckups() {
+  const { hiddenBookmarkCheckups = [] } = await chrome.storage.local.get('hiddenBookmarkCheckups');
+  const storedItems = Array.isArray(hiddenBookmarkCheckups) ? hiddenBookmarkCheckups : [];
+  const now = Date.now();
+  const active = storedItems.filter(item =>
+    item && item.key && item.expiresAt && new Date(item.expiresAt).getTime() > now
+  );
+
+  if (active.length !== storedItems.length) {
+    await chrome.storage.local.set({ hiddenBookmarkCheckups: active });
+  }
+
+  return active;
+}
+
+async function hideBookmarkCheckupItem(key) {
+  if (!key) return;
+  await hideBookmarkCheckupItems([key]);
+}
+
+async function hideBookmarkCheckupItems(keys) {
+  const uniqueKeys = Array.from(new Set((keys || []).filter(Boolean)));
+  if (uniqueKeys.length === 0) return;
+
+  const active = await getActiveHiddenBookmarkCheckups();
+  const now = Date.now();
+  const uniqueKeySet = new Set(uniqueKeys);
+  const next = active.filter(item => !uniqueKeySet.has(item.key));
+
+  next.push(...uniqueKeys.map(key => ({
+    key,
+    hiddenAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + BOOKMARK_CHECKUP_HIDE_DAYS * 86400000).toISOString(),
+  })));
+
+  await chrome.storage.local.set({ hiddenBookmarkCheckups: next });
+}
+
+async function getLastBookmarkVisitTime(url) {
+  if (!chrome.history || !chrome.history.getVisits) return 0;
+
+  try {
+    const visits = await chrome.history.getVisits({ url });
+    return visits.reduce((latest, visit) => Math.max(latest, visit.visitTime || 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function getLastBookmarkVisitTimeForUrls(urls) {
+  const uniqueUrls = Array.from(new Set((urls || []).filter(Boolean)));
+  const visitTimes = await Promise.all(uniqueUrls.map(url => getLastBookmarkVisitTime(url)));
+  return visitTimes.reduce((latest, visitTime) => Math.max(latest, visitTime || 0), 0);
+}
+
+function bookmarkAgeLabel(lastVisitTime) {
+  if (!lastVisitTime) return 'No recent visit found';
+
+  const diffDays = Math.floor((Date.now() - lastVisitTime) / 86400000);
+  if (diffDays >= BOOKMARK_VERY_STALE_DAYS) return `Very stale · ${Math.floor(diffDays / 365)} years`;
+  if (diffDays >= 365) return `${Math.floor(diffDays / 365)} year${Math.floor(diffDays / 365) !== 1 ? 's' : ''} quiet`;
+  return `${diffDays} days quiet`;
+}
+
+function bookmarkAddedLabel(dateAdded) {
+  if (!dateAdded) return '';
+  return `Saved ${timeAgo(new Date(dateAdded).toISOString())}`;
+}
+
+async function getBookmarkCheckup() {
+  if (!chrome.bookmarks || !chrome.bookmarks.getTree) return { stale: [], duplicates: [] };
+
+  try {
+    const hiddenItems = await getActiveHiddenBookmarkCheckups();
+    const hiddenKeys = new Set(hiddenItems.map(item => item.key));
+    const tree = await chrome.bookmarks.getTree();
+    const bookmarks = flattenBookmarks(tree);
+    if (bookmarks.length === 0) return { stale: [], duplicates: [] };
+
+    const byUrl = new Map();
+    for (const bookmark of bookmarks) {
+      if (!byUrl.has(bookmark.normalizedUrl)) byUrl.set(bookmark.normalizedUrl, []);
+      byUrl.get(bookmark.normalizedUrl).push(bookmark);
+    }
+
+    const visitTimes = new Map();
+    const uniqueUrls = Array.from(byUrl.keys());
+
+    for (let i = 0; i < uniqueUrls.length; i += 12) {
+      const batch = uniqueUrls.slice(i, i + 12);
+      const times = await Promise.all(batch.map(url => {
+        const originals = (byUrl.get(url) || []).flatMap(bookmark =>
+          bookmark.url === bookmark.normalizedUrl
+            ? [bookmark.url]
+            : [bookmark.url, bookmark.normalizedUrl]
+        );
+        return getLastBookmarkVisitTimeForUrls(originals);
+      }));
+      batch.forEach((url, index) => visitTimes.set(url, times[index] || 0));
+    }
+
+    const staleCutoff = Date.now() - BOOKMARK_STALE_DAYS * 86400000;
+    const stale = bookmarks
+      .map(bookmark => ({
+        ...bookmark,
+        lastVisitTime: visitTimes.get(bookmark.normalizedUrl) || 0,
+      }))
+      .filter(bookmark => {
+        if (hiddenKeys.has(`stale:${bookmark.id}`)) return false;
+        return !bookmark.lastVisitTime || bookmark.lastVisitTime < staleCutoff;
+      })
+      .sort((a, b) => {
+        if (a.lastVisitTime !== b.lastVisitTime) return a.lastVisitTime - b.lastVisitTime;
+        return (a.dateAdded || 0) - (b.dateAdded || 0);
+      });
+
+    const duplicates = Array.from(byUrl.entries())
+      .filter(([normalizedUrl, items]) => items.length > 1 && !hiddenKeys.has(`dupe:${normalizedUrl}`))
+      .map(([normalizedUrl, items]) => {
+        const sorted = [...items].sort((a, b) => {
+          const aAdded = a.dateAdded || Number.MAX_SAFE_INTEGER;
+          const bAdded = b.dateAdded || Number.MAX_SAFE_INTEGER;
+          if (aAdded !== bAdded) return aAdded - bAdded;
+          return String(a.id).localeCompare(String(b.id));
+        });
+        const keep = sorted[0];
+        const remove = sorted.slice(1);
+        return {
+          normalizedUrl,
+          keep,
+          remove,
+          count: sorted.length,
+          lastVisitTime: visitTimes.get(normalizedUrl) || 0,
+        };
+      })
+      .sort((a, b) => b.count - a.count || (a.keep.dateAdded || 0) - (b.keep.dateAdded || 0))
+      .slice(0, BOOKMARK_DUPLICATE_LIMIT);
+
+    return { stale, duplicates };
+  } catch (err) {
+    console.warn('[tab-out] Could not load bookmark checkup:', err);
+    return { stale: [], duplicates: [] };
+  }
+}
+
+function renderBookmarkActions(bookmark) {
+  const safeUrl = escapeHtml(bookmark.url);
+  const safeId = escapeHtml(bookmark.id);
+  return `
+    <div class="bookmark-actions">
+      <button class="bookmark-action" data-action="open-bookmark" data-bookmark-url="${safeUrl}">${ICONS.focus} Open</button>
+      <button class="bookmark-action danger" data-action="delete-stale-bookmark" data-bookmark-id="${safeId}">${ICONS.close} Delete</button>
+      <button class="bookmark-action muted" data-action="hide-bookmark-checkup" data-checkup-key="stale:${safeId}">Hide</button>
+    </div>`;
+}
+
+function renderStaleBookmarkItem(bookmark) {
+  const displayName = friendlyDomain(bookmark.hostname);
+  const cleanHost = bookmark.hostname.replace(/^www\./, '');
+  const faviconUrl = `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(bookmark.homeUrl)}&size=32`;
+  const staleClass = bookmark.lastVisitTime && Date.now() - bookmark.lastVisitTime >= BOOKMARK_VERY_STALE_DAYS * 86400000
+    ? ' very-stale'
+    : '';
+  const folder = bookmark.folderPath || 'Bookmarks';
+  const title = bookmark.title || displayName || cleanHost;
+  const checked = selectedStaleBookmarkIds.has(bookmark.id) ? ' checked' : '';
+
+  return `
+    <div class="bookmark-checkup-item stale-bookmark${staleClass}" data-bookmark-id="${escapeHtml(bookmark.id)}">
+      <input type="checkbox" class="bookmark-checkbox" data-action="toggle-stale-bookmark-selection" data-bookmark-id="${escapeHtml(bookmark.id)}"${checked}>
+      <img class="bookmark-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
+      <div class="bookmark-info">
+        <div class="bookmark-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+        <div class="bookmark-meta">
+          <span>${escapeHtml(cleanHost)}</span>
+          <span>${escapeHtml(folder)}</span>
+          <span>${escapeHtml(bookmarkAgeLabel(bookmark.lastVisitTime))}</span>
+        </div>
+      </div>
+      ${renderBookmarkActions(bookmark)}
+    </div>`;
+}
+
+function getVisibleStaleBookmarks() {
+  return getFilteredStaleBookmarks().slice(0, visibleStaleCount);
+}
+
+function getFilteredStaleBookmarks() {
+  if (selectedStaleFolder === '__all__') return bookmarkCheckup.stale;
+  return bookmarkCheckup.stale.filter(bookmark => (bookmark.folderPath || 'Bookmarks') === selectedStaleFolder);
+}
+
+function ensureSelectedStaleFolderExists() {
+  if (selectedStaleFolder === '__all__') return;
+
+  const folders = new Set(bookmarkCheckup.stale.map(bookmark => bookmark.folderPath || 'Bookmarks'));
+  if (!folders.has(selectedStaleFolder)) {
+    selectedStaleFolder = '__all__';
+    visibleStaleCount = BOOKMARK_STALE_PAGE_SIZE;
+    selectedStaleBookmarkIds.clear();
+  }
+}
+
+function getStaleFolderOptions() {
+  const byFolder = new Map();
+  for (const bookmark of bookmarkCheckup.stale) {
+    const folder = bookmark.folderPath || 'Bookmarks';
+    byFolder.set(folder, (byFolder.get(folder) || 0) + 1);
+  }
+
+  return Array.from(byFolder.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function syncSelectedStaleBookmarks() {
+  const activeIds = new Set(getFilteredStaleBookmarks().map(bookmark => bookmark.id));
+  selectedStaleBookmarkIds = new Set(
+    Array.from(selectedStaleBookmarkIds).filter(id => activeIds.has(id))
+  );
+}
+
+function renderFolderSelect(filteredCount) {
+  const options = getStaleFolderOptions();
+  if (options.length <= 1) return '';
+
+  const folderOptions = options.map(([folder, count]) => {
+    const selected = folder === selectedStaleFolder ? ' selected' : '';
+    return `<option value="${escapeHtml(folder)}"${selected}>${escapeHtml(folder)} (${count})</option>`;
+  }).join('');
+
+  return `
+    <label class="bookmark-folder-filter">
+      <span>Folder</span>
+      <select id="staleBookmarkFolderFilter">
+        <option value="__all__"${selectedStaleFolder === '__all__' ? ' selected' : ''}>All folders (${bookmarkCheckup.stale.length})</option>
+        ${folderOptions}
+      </select>
+      <em>${filteredCount} shown in this view</em>
+    </label>`;
+}
+
+function renderStaleBookmarkToolbar(staleCount, filteredCount, visibleCount) {
+  const selectedCount = selectedStaleBookmarkIds.size;
+  const disabled = selectedCount === 0 ? ' disabled' : '';
+  const remaining = Math.max(0, filteredCount - visibleCount);
+  const nextBatch = Math.min(BOOKMARK_STALE_PAGE_SIZE, remaining);
+  const showMore = remaining > 0
+    ? `<button class="bookmark-action" data-action="show-more-stale-bookmarks">Show ${nextBatch} more</button>`
+    : '';
+
+  return `
+    <div class="bookmark-bulk-toolbar">
+      <div class="bookmark-bulk-left">
+        ${renderFolderSelect(filteredCount)}
+        <span class="bookmark-selection-count">${selectedCount} selected</span>
+        <button class="bookmark-action" data-action="select-visible-stale-bookmarks">Select visible</button>
+        <button class="bookmark-action muted" data-action="clear-stale-bookmark-selection">Clear selection</button>
+      </div>
+      <div class="bookmark-bulk-right">
+        <button class="bookmark-action danger" data-action="delete-selected-stale-bookmarks"${disabled}>${ICONS.close} Delete selected</button>
+        <button class="bookmark-action" data-action="hide-selected-stale-bookmarks"${disabled}>Hide selected</button>
+        ${showMore}
+      </div>
+    </div>`;
+}
+
+function renderDuplicateBookmarkItem(group) {
+  const keep = group.keep;
+  const displayName = friendlyDomain(keep.hostname);
+  const cleanHost = keep.hostname.replace(/^www\./, '');
+  const faviconUrl = `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(keep.homeUrl)}&size=32`;
+  const removeIds = group.remove.map(item => encodeURIComponent(item.id)).join(',');
+  const safeKey = escapeHtml(`dupe:${group.normalizedUrl}`);
+  const title = keep.title || displayName || cleanHost;
+  const keptMeta = bookmarkAddedLabel(keep.dateAdded);
+
+  return `
+    <div class="bookmark-checkup-item duplicate-bookmark">
+      <img class="bookmark-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
+      <div class="bookmark-info">
+        <div class="bookmark-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+        <div class="bookmark-meta">
+          <span>${escapeHtml(cleanHost)}</span>
+          <span>Keep oldest</span>
+          <span>${escapeHtml(keptMeta || 'Oldest copy selected')}</span>
+        </div>
+      </div>
+      <div class="bookmark-actions">
+        <span class="bookmark-dupe-pill">${group.remove.length} extra</span>
+        <button class="bookmark-action danger" data-action="remove-duplicate-bookmarks" data-bookmark-ids="${escapeHtml(removeIds)}">${ICONS.close} Remove</button>
+        <button class="bookmark-action muted" data-action="hide-bookmark-checkup" data-checkup-key="${safeKey}">Hide</button>
+      </div>
+    </div>`;
+}
+
+async function renderBookmarkCheckupSection(refreshData = true) {
+  const section = document.getElementById('bookmarkCheckupSection');
+  const grid = document.getElementById('bookmarkCheckupGrid');
+  const countEl = document.getElementById('bookmarkCheckupCount');
+  if (!section || !grid) return;
+
+  if (refreshData) {
+    bookmarkCheckup = await getBookmarkCheckup();
+  }
+  ensureSelectedStaleFolderExists();
+  syncSelectedStaleBookmarks();
+  const staleCount = bookmarkCheckup.stale.length;
+  const duplicateCount = bookmarkCheckup.duplicates.length;
+  const filteredStaleBookmarks = getFilteredStaleBookmarks();
+  const filteredCount = filteredStaleBookmarks.length;
+  const visibleStaleBookmarks = getVisibleStaleBookmarks();
+  const visibleCount = visibleStaleBookmarks.length;
+
+  if (staleCount === 0 && duplicateCount === 0) {
+    section.style.display = 'none';
+    grid.innerHTML = '';
+    return;
+  }
+
+  const staleHtml = staleCount > 0
+    ? `<div class="bookmark-panel">
+        <div class="bookmark-panel-head">
+          <span>Sleeping bookmarks</span>
+          <strong>${staleCount}</strong>
+        </div>
+        ${renderStaleBookmarkToolbar(staleCount, filteredCount, visibleCount)}
+        <div class="bookmark-list">${visibleStaleBookmarks.map(renderStaleBookmarkItem).join('')}</div>
+      </div>`
+    : '';
+
+  const duplicateHtml = duplicateCount > 0
+    ? `<div class="bookmark-panel">
+        <div class="bookmark-panel-head">
+          <span>Duplicates</span>
+          <strong>${duplicateCount}</strong>
+        </div>
+        <div class="bookmark-list">${bookmarkCheckup.duplicates.map(renderDuplicateBookmarkItem).join('')}</div>
+      </div>`
+    : '';
+
+  grid.classList.toggle('single-panel', duplicateCount === 0 || staleCount === 0);
+  grid.innerHTML = staleHtml + duplicateHtml;
+  if (countEl) {
+    const parts = [];
+    if (staleCount) parts.push(`${staleCount} sleeping`);
+    if (duplicateCount) parts.push(`${duplicateCount} duplicate group${duplicateCount !== 1 ? 's' : ''}`);
+    countEl.textContent = parts.join(' · ');
+  }
+  section.style.display = 'block';
+}
+
+async function openBookmarkUrl(url) {
+  await openFrequentWebsite(url);
+}
+
+async function removeBookmarksByIds(ids) {
+  const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+  for (const id of uniqueIds) {
+    try {
+      await chrome.bookmarks.remove(id);
+    } catch (err) {
+      console.warn('[tab-out] Could not remove bookmark:', id, err);
+    }
   }
 }
 
@@ -1238,6 +1688,9 @@ async function renderStaticDashboard() {
   // --- Render frequent websites from local Chrome history ---
   await renderFrequentSection();
 
+  // --- Render bookmark checkup from local bookmarks + history ---
+  await renderBookmarkCheckupSection();
+
   // --- Group tabs by domain ---
   // Landing pages (Gmail inbox, Twitter home, etc.) get their own special group
   // so they can be closed together without affecting content tabs on the same domain.
@@ -1454,6 +1907,118 @@ document.addEventListener('click', async (e) => {
   // ---- Open a frequent website in the current new-tab page ----
   if (action === 'open-frequent-site') {
     await openFrequentWebsite(actionEl.dataset.siteUrl);
+    return;
+  }
+
+  // ---- Open a bookmark checkup item in the current new-tab page ----
+  if (action === 'open-bookmark') {
+    await openBookmarkUrl(actionEl.dataset.bookmarkUrl);
+    return;
+  }
+
+  // ---- Select/deselect one sleeping bookmark ----
+  if (action === 'toggle-stale-bookmark-selection') {
+    const bookmarkId = actionEl.dataset.bookmarkId;
+    if (!bookmarkId) return;
+
+    if (actionEl.checked) {
+      selectedStaleBookmarkIds.add(bookmarkId);
+    } else {
+      selectedStaleBookmarkIds.delete(bookmarkId);
+    }
+    await renderBookmarkCheckupSection(false);
+    return;
+  }
+
+  // ---- Select all currently visible sleeping bookmarks ----
+  if (action === 'select-visible-stale-bookmarks') {
+    getVisibleStaleBookmarks().forEach(bookmark => selectedStaleBookmarkIds.add(bookmark.id));
+    await renderBookmarkCheckupSection(false);
+    return;
+  }
+
+  // ---- Clear sleeping bookmark selection ----
+  if (action === 'clear-stale-bookmark-selection') {
+    selectedStaleBookmarkIds.clear();
+    await renderBookmarkCheckupSection(false);
+    return;
+  }
+
+  // ---- Show the next batch of sleeping bookmarks ----
+  if (action === 'show-more-stale-bookmarks') {
+    visibleStaleCount += BOOKMARK_STALE_PAGE_SIZE;
+    await renderBookmarkCheckupSection(false);
+    return;
+  }
+
+  // ---- Hide a bookmark checkup item for 30 days ----
+  if (action === 'hide-bookmark-checkup') {
+    const key = actionEl.dataset.checkupKey;
+    if (!key) return;
+
+    await hideBookmarkCheckupItem(key);
+    if (key.startsWith('stale:')) selectedStaleBookmarkIds.delete(key.replace('stale:', ''));
+    await renderBookmarkCheckupSection();
+    showToast('Hidden for 30 days');
+    return;
+  }
+
+  // ---- Hide selected sleeping bookmarks for 30 days ----
+  if (action === 'hide-selected-stale-bookmarks') {
+    const ids = Array.from(selectedStaleBookmarkIds);
+    if (ids.length === 0) return;
+
+    await hideBookmarkCheckupItems(ids.map(id => `stale:${id}`));
+    selectedStaleBookmarkIds.clear();
+    await renderBookmarkCheckupSection();
+    showToast(`Hidden ${ids.length} bookmark${ids.length !== 1 ? 's' : ''} for 30 days`);
+    return;
+  }
+
+  // ---- Delete one stale bookmark after confirmation ----
+  if (action === 'delete-stale-bookmark') {
+    const bookmarkId = actionEl.dataset.bookmarkId;
+    if (!bookmarkId) return;
+
+    const ok = window.confirm('Delete this bookmark from Chrome? This cannot be undone from Tab Out.');
+    if (!ok) return;
+
+    await removeBookmarksByIds([bookmarkId]);
+    selectedStaleBookmarkIds.delete(bookmarkId);
+    await renderBookmarkCheckupSection();
+    showToast('Bookmark deleted');
+    return;
+  }
+
+  // ---- Delete selected sleeping bookmarks after confirmation ----
+  if (action === 'delete-selected-stale-bookmarks') {
+    const ids = Array.from(selectedStaleBookmarkIds);
+    if (ids.length === 0) return;
+
+    const ok = window.confirm(`Delete ${ids.length} Chrome bookmark${ids.length !== 1 ? 's' : ''}? This cannot be undone from Tab Out.`);
+    if (!ok) return;
+
+    await removeBookmarksByIds(ids);
+    selectedStaleBookmarkIds.clear();
+    await renderBookmarkCheckupSection();
+    showToast(`Deleted ${ids.length} bookmark${ids.length !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  // ---- Remove duplicate bookmark copies, keeping the oldest one ----
+  if (action === 'remove-duplicate-bookmarks') {
+    const ids = (actionEl.dataset.bookmarkIds || '')
+      .split(',')
+      .map(id => decodeURIComponent(id))
+      .filter(Boolean);
+    if (ids.length === 0) return;
+
+    const ok = window.confirm(`Remove ${ids.length} duplicate bookmark${ids.length !== 1 ? 's' : ''}? Tab Out will keep the oldest copy.`);
+    if (!ok) return;
+
+    await removeBookmarksByIds(ids);
+    await renderBookmarkCheckupSection();
+    showToast('Duplicate bookmarks removed');
     return;
   }
 
@@ -1726,6 +2291,16 @@ document.addEventListener('input', async (e) => {
   } catch (err) {
     console.warn('[tab-out] Archive search failed:', err);
   }
+});
+
+// ---- Bookmark folder filter ----
+document.addEventListener('change', async (e) => {
+  if (e.target.id !== 'staleBookmarkFolderFilter') return;
+
+  selectedStaleFolder = e.target.value || '__all__';
+  visibleStaleCount = BOOKMARK_STALE_PAGE_SIZE;
+  selectedStaleBookmarkIds.clear();
+  await renderBookmarkCheckupSection(false);
 });
 
 
