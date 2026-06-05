@@ -711,6 +711,8 @@ let domainGroups = [];
 // Frequently visited websites from local Chrome history.
 let frequentWebsites = [];
 
+const FREQUENT_SITE_HIDE_DAYS = 30;
+
 
 /* ----------------------------------------------------------------
    HELPER: filter out browser-internal pages
@@ -759,15 +761,63 @@ function normalizeHistoryWebsite(url) {
   }
 }
 
+async function getActiveHiddenFrequentSites() {
+  const { hiddenFrequentSites = [] } = await chrome.storage.local.get('hiddenFrequentSites');
+  const storedSites = Array.isArray(hiddenFrequentSites) ? hiddenFrequentSites : [];
+  const now = Date.now();
+  const active = storedSites.filter(item =>
+    item && item.hostname && item.expiresAt && new Date(item.expiresAt).getTime() > now
+  );
+
+  if (active.length !== storedSites.length) {
+    await chrome.storage.local.set({ hiddenFrequentSites: active });
+  }
+
+  return active;
+}
+
+function hiddenSiteDaysLeft(item) {
+  const expiresAt = new Date(item.expiresAt).getTime();
+  const days = Math.ceil((expiresAt - Date.now()) / 86400000);
+  return Math.max(1, days);
+}
+
+async function hideFrequentSite(hostname) {
+  if (!hostname) return;
+
+  const active = await getActiveHiddenFrequentSites();
+  const now = Date.now();
+  const next = active.filter(item => item.hostname !== hostname);
+
+  next.push({
+    hostname,
+    hiddenAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + FREQUENT_SITE_HIDE_DAYS * 86400000).toISOString(),
+  });
+
+  await chrome.storage.local.set({ hiddenFrequentSites: next });
+}
+
+async function restoreFrequentSite(hostname) {
+  if (!hostname) return;
+
+  const active = await getActiveHiddenFrequentSites();
+  await chrome.storage.local.set({
+    hiddenFrequentSites: active.filter(item => item.hostname !== hostname),
+  });
+}
+
 async function getFrequentWebsites(limit = 8) {
   if (!chrome.history || !chrome.history.search) return [];
 
   try {
+    const hiddenSites = await getActiveHiddenFrequentSites();
+    const hiddenHosts = new Set(hiddenSites.map(item => item.hostname));
     const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
     const items = await chrome.history.search({
       text: '',
       startTime: ninetyDaysAgo,
-      maxResults: 500,
+      maxResults: 1000,
     });
 
     const byHostname = new Map();
@@ -793,6 +843,7 @@ async function getFrequentWebsites(limit = 8) {
         if (b.visitCount !== a.visitCount) return b.visitCount - a.visitCount;
         return b.lastVisitTime - a.lastVisitTime;
       })
+      .filter(item => !hiddenHosts.has(item.hostname))
       .slice(0, limit);
   } catch (err) {
     console.warn('[tab-out] Could not load frequent websites:', err);
@@ -800,18 +851,58 @@ async function getFrequentWebsites(limit = 8) {
   }
 }
 
+function renderHiddenSiteItem(item) {
+  const displayName = friendlyDomain(item.hostname);
+  const cleanHost = item.hostname.replace(/^www\./, '');
+  const daysLeft = hiddenSiteDaysLeft(item);
+
+  return `
+    <div class="hidden-site-item">
+      <div class="hidden-site-info">
+        <div class="hidden-site-name">${escapeHtml(displayName)}</div>
+        <div class="hidden-site-meta">${escapeHtml(cleanHost)} · ${daysLeft} day${daysLeft !== 1 ? 's' : ''} left</div>
+      </div>
+      <button class="hidden-site-restore" data-action="restore-frequent-site" data-site-host="${escapeHtml(item.hostname)}">Restore</button>
+    </div>`;
+}
+
+async function renderHiddenSitesPanel() {
+  const manageBtn = document.getElementById('frequentManageBtn');
+  const list = document.getElementById('hiddenSitesList');
+  if (!manageBtn || !list) return 0;
+
+  const hiddenSites = await getActiveHiddenFrequentSites();
+
+  manageBtn.style.display = hiddenSites.length > 0 ? 'inline-flex' : 'none';
+
+  if (hiddenSites.length === 0) {
+    list.innerHTML = '<div class="hidden-sites-empty">No hidden sites.</div>';
+    return 0;
+  }
+
+  list.innerHTML = hiddenSites
+    .sort((a, b) => new Date(b.hiddenAt).getTime() - new Date(a.hiddenAt).getTime())
+    .map(renderHiddenSiteItem)
+    .join('');
+  return hiddenSites.length;
+}
+
 function renderFrequentWebsite(item) {
   const displayName = friendlyDomain(item.hostname);
   const cleanHost = item.hostname.replace(/^www\./, '');
   const faviconUrl = `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(item.homeUrl)}&size=32`;
   const safeUrl = escapeHtml(item.homeUrl);
+  const safeHost = escapeHtml(item.hostname);
 
   return `
-    <button class="frequent-site" data-action="open-frequent-site" data-site-url="${safeUrl}" title="${safeUrl}">
+    <div class="frequent-site" data-action="open-frequent-site" data-site-url="${safeUrl}" title="${safeUrl}">
       <img class="frequent-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
       <span class="frequent-label">${escapeHtml(displayName)}</span>
       <span class="frequent-domain">${escapeHtml(cleanHost)}</span>
-    </button>`;
+      <button class="frequent-hide" data-action="hide-frequent-site" data-site-host="${safeHost}" title="Hide for 30 days" aria-label="Hide ${escapeHtml(displayName)} for 30 days">
+        ${ICONS.close}
+      </button>
+    </div>`;
 }
 
 async function renderFrequentSection() {
@@ -821,6 +912,7 @@ async function renderFrequentSection() {
   if (!section || !grid) return;
 
   frequentWebsites = await getFrequentWebsites(8);
+  await renderHiddenSitesPanel();
 
   if (frequentWebsites.length === 0) {
     section.style.display = 'none';
@@ -1319,6 +1411,45 @@ document.addEventListener('click', async (e) => {
   }
 
   const card = actionEl.closest('.mission-card');
+
+  // ---- Toggle hidden frequent sites manager ----
+  if (action === 'toggle-hidden-sites') {
+    const panel = document.getElementById('hiddenSitesPanel');
+    if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    return;
+  }
+
+  // ---- Hide a frequent website for 30 days ----
+  if (action === 'hide-frequent-site') {
+    e.stopPropagation();
+    const hostname = actionEl.dataset.siteHost;
+    if (!hostname) return;
+
+    await hideFrequentSite(hostname);
+    const frequentCard = actionEl.closest('.frequent-site');
+    if (frequentCard) {
+      frequentCard.classList.add('removing');
+      setTimeout(() => renderFrequentSection(), 180);
+    } else {
+      await renderFrequentSection();
+    }
+    showToast('Hidden for 30 days');
+    return;
+  }
+
+  // ---- Restore a hidden frequent website ----
+  if (action === 'restore-frequent-site') {
+    const hostname = actionEl.dataset.siteHost;
+    if (!hostname) return;
+
+    await restoreFrequentSite(hostname);
+    await renderFrequentSection();
+    const panel = document.getElementById('hiddenSitesPanel');
+    const remainingHiddenSites = await getActiveHiddenFrequentSites();
+    if (panel) panel.style.display = remainingHiddenSites.length > 0 ? 'block' : 'none';
+    showToast('Site restored');
+    return;
+  }
 
   // ---- Open a frequent website in the current new-tab page ----
   if (action === 'open-frequent-site') {
