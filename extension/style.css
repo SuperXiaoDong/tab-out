@@ -18,12 +18,14 @@
   --status-abandoned: #b35a5a;
   --card-bg: #fffdf9;
   --shadow: rgba(26, 22, 19, 0.06);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   background: var(--paper);
   color: var(--ink);
   min-height: 100vh;
@@ -65,7 +67,7 @@ header {
 }
 
 .header-left h1 {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 300;
   font-size: 28px;
   letter-spacing: -0.5px;
@@ -127,7 +129,7 @@ header {
 }
 
 .tab-cleanup-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 600;
   padding: 8px 20px;
@@ -194,7 +196,7 @@ header {
 }
 
 .section-header h2 {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 400;
   font-size: 18px;
   font-style: italic;
@@ -472,7 +474,7 @@ header {
 }
 
 .frequent-site {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   background: var(--card-bg);
   border: 1px solid var(--warm-gray);
   border-radius: 8px;
@@ -751,7 +753,7 @@ header {
 }
 
 .bookmark-folder-filter select {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 11px;
   color: var(--ink);
   background: var(--card-bg);
@@ -783,7 +785,7 @@ header {
 }
 
 .bookmark-action {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 500;
   color: var(--accent-slate);
@@ -851,7 +853,7 @@ header {
 }
 
 .frequent-manage-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 400;
   color: var(--muted);
@@ -929,7 +931,7 @@ header {
 }
 
 .hidden-site-restore {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 500;
   color: var(--accent-sage);
@@ -963,7 +965,7 @@ header {
 
 .mission-page-count {
   font-size: 20px;
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-weight: 300;
   color: var(--ink);
   line-height: 1;
@@ -985,7 +987,7 @@ header {
 
 .action-btn {
   font-size: 11px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-weight: 500;
   padding: 5px 14px;
   border-radius: 4px;
@@ -1058,7 +1060,7 @@ header {
   transform: translateX(-50%) translateY(80px);
   background: var(--ink);
   color: var(--paper);
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   font-weight: 500;
   padding: 12px 24px;
@@ -1104,7 +1106,7 @@ footer {
 }
 
 .stat-num {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 28px;
   font-weight: 300;
   color: var(--ink);
@@ -1126,7 +1128,7 @@ footer {
 }
 
 .refresh-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 500;
   color: var(--accent-amber);
@@ -1235,7 +1237,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 .empty-title {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 400;
   font-style: italic;
@@ -1319,7 +1321,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 /* "Update now" button — small, filled, sage green */
 .update-banner-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 500;
   color: #fff;
@@ -1585,7 +1587,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 .archive-toggle {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 500;
   color: var(--muted);
@@ -1626,7 +1628,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 .archive-search {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   width: 100%;
   padding: 8px 12px;
